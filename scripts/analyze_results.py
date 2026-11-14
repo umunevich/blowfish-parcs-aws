@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """Compute speedup / efficiency from results/raw_results.csv and draw plots.
 
-Definitions (p = number of workers, T_seq = mean sequential time):
-    speedup     S(p) = T_seq / T_par(p)
-    efficiency  E(p) = S(p) / p
-    Karp-Flatt  e(p) = (1/S - 1/p) / (1 - 1/p)   -- experimentally determined
-                serial fraction (p >= 2); growing e(p) means overhead grows with p.
+Two sequential baselines are used (p = number of workers, T(p) = mean total
+time of the parallel algorithm measured on the master):
+
+  * T_seq   -- the sequential algorithm run on the master node (as measured);
+  * T_seq*  -- pure encryption time of ONE worker processing the whole input
+               (compute_max_s at p = 1). The master turned out to encrypt about
+               10 % slower than a worker, so T_seq slightly overstates the
+               speedup; T_seq* gives a conservative estimate.
+
+    S(p)  = T_seq  / T(p),   E(p)  = S(p)  / p
+    S*(p) = T_seq* / T(p),   E*(p) = S*(p) / p
 
 Outputs:
     results/analysis.csv          one row per (size, p) with means and metrics
@@ -25,6 +31,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.ticker import FixedLocator, FuncFormatter, NullLocator  # noqa: E402
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 FIG_DIR = os.path.join(ROOT, "report", "figures")
@@ -34,7 +41,6 @@ TAB_DIR = os.path.join(ROOT, "report", "tables")
 # plus distinct markers so series are not identified by color alone.
 SERIES_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
 MARKERS = ["o", "s", "^", "D"]
-INK = "#0b0b0b"
 INK_SECONDARY = "#52514e"
 GRID = "#e4e3df"
 REFERENCE = "#8a8984"
@@ -80,6 +86,7 @@ def metrics(agg):
     out = []
     for size in sizes:
         t_seq = agg[(size, 0)]["total"]
+        t_seq_worker = agg[(size, 1)]["compute_max"]
         for p in sorted(w for s, w in agg if s == size):
             a = agg[(size, p)]
             row = {
@@ -92,20 +99,22 @@ def metrics(agg):
                 "throughput_mb_s": size / 2 ** 20 / a["total"],
             }
             if p > 0:
-                s = t_seq / a["total"]
-                row["speedup"] = s
-                row["efficiency"] = s / p
+                row["speedup"] = t_seq / a["total"]
+                row["efficiency"] = row["speedup"] / p
+                row["speedup_worker_base"] = t_seq_worker / a["total"]
+                row["efficiency_worker_base"] = row["speedup_worker_base"] / p
                 row["overhead_share"] = a["overhead"] / a["total"]
-                row["karp_flatt"] = (1 / s - 1 / p) / (1 - 1 / p) if p > 1 else ""
             else:
-                row.update(speedup=1.0, efficiency="", overhead_share=0.0, karp_flatt="")
+                row.update(speedup=1.0, efficiency="", speedup_worker_base="",
+                           efficiency_worker_base="", overhead_share=0.0)
             out.append(row)
     return out
 
 
 def style_axes(ax, xlabel, ylabel):
     ax.set_xlabel(xlabel, color=INK_SECONDARY)
-    ax.set_ylabel(ylabel, color=INK_SECONDARY)
+    if ylabel:
+        ax.set_ylabel(ylabel, color=INK_SECONDARY)
     ax.grid(True, color=GRID, linewidth=0.8)
     ax.set_axisbelow(True)
     for side in ("top", "right"):
@@ -131,52 +140,63 @@ def by_size(rows):
 
 
 def plot_time(rows):
-    fig, ax = plt.subplots(figsize=(6.4, 4.2))
+    """Time vs p. The sequential run is a separate point (not joined by a line):
+    it is a different algorithm, not "0 workers"."""
+    p_max = max(r["workers"] for r in rows)
+    fig, ax = plt.subplots(figsize=(6.6, 4.4))
+    ax.axvline(0.5, color=GRID, linewidth=1.2)
     for i, (size, items) in enumerate(by_size(rows)):
-        xs = [r["workers"] for r in items]
-        ax.errorbar(xs, [r["total_s"] for r in items], yerr=[r["total_std_s"] for r in items],
-                    color=SERIES_COLORS[i], marker=MARKERS[i], markersize=6, linewidth=2,
-                    capsize=3, label="%g МБ" % size)
+        seq = [r for r in items if r["workers"] == 0][0]
+        par = [r for r in items if r["workers"] > 0]
+        style = dict(color=SERIES_COLORS[i], marker=MARKERS[i], markersize=6)
+        ax.plot([0], [seq["total_s"]], linestyle="none", markerfacecolor="white",
+                markeredgewidth=2, **style)
+        ax.errorbar([r["workers"] for r in par], [r["total_s"] for r in par],
+                    yerr=[r["total_std_s"] for r in par], linewidth=2, capsize=3,
+                    label="%g МіБ" % size, **style)
     ax.set_yscale("log")
-    ax.set_xticks(range(0, max(r["workers"] for r in rows) + 1))
-    ax.set_xticklabels(["посл."] + [str(p) for p in range(1, max(r["workers"] for r in rows) + 1)])
-    style_axes(ax, "Кількість воркерів (посл. = послідовний алгоритм)", "Час, с (логарифмічна шкала)")
+    ticks = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50]
+    ax.yaxis.set_major_locator(FixedLocator(ticks))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: "%g" % v))
+    ax.yaxis.set_minor_locator(NullLocator())
+    ax.set_ylim(0.1, 50)
+    ax.set_xticks(range(0, p_max + 1))
+    ax.set_xticklabels(["посл."] + [str(p) for p in range(1, p_max + 1)])
+    style_axes(ax, "Кількість воркерів p (посл. = послідовний алгоритм на master)",
+               "Час T, с (логарифмічна шкала)")
     ax.legend(title="Розмір даних", frameon=False, loc="upper left", bbox_to_anchor=(1.01, 1.0))
     save(fig, "time_vs_workers")
 
 
-def plot_speedup(rows):
+def plot_two_baselines(rows, key, key_worker, symbol, ylabel, ideal, name, ylim):
+    """Two panels: (a) baseline = sequential on master, (b) baseline = one worker."""
     par = [r for r in rows if r["workers"] > 0]
     p_max = max(r["workers"] for r in par)
-    fig, ax = plt.subplots(figsize=(6.4, 4.2))
-    ax.plot([1, p_max], [1, p_max], color=REFERENCE, linestyle="--", linewidth=1.5,
-            label="Ідеальне (лінійне)")
-    for i, (size, items) in enumerate(by_size(par)):
-        ax.plot([r["workers"] for r in items], [r["speedup"] for r in items],
-                color=SERIES_COLORS[i], marker=MARKERS[i], markersize=6, linewidth=2,
-                label="%g МБ" % size)
-    ax.set_xticks(range(1, p_max + 1))
-    ax.set_xlim(0.8, p_max + 0.2)
-    ax.set_ylim(0, p_max + 0.3)
-    style_axes(ax, "Кількість воркерів p", "Прискорення S(p) = T_посл / T_пар(p)")
-    ax.legend(frameon=False)
-    save(fig, "speedup")
-
-
-def plot_efficiency(rows):
-    par = [r for r in rows if r["workers"] > 0]
-    p_max = max(r["workers"] for r in par)
-    fig, ax = plt.subplots(figsize=(6.4, 4.2))
-    ax.axhline(1.0, color=REFERENCE, linestyle="--", linewidth=1.5, label="Ідеальна (E = 1)")
-    for i, (size, items) in enumerate(by_size(par)):
-        ax.plot([r["workers"] for r in items], [r["efficiency"] for r in items],
-                color=SERIES_COLORS[i], marker=MARKERS[i], markersize=6, linewidth=2,
-                label="%g МБ" % size)
-    ax.set_xticks(range(1, p_max + 1))
-    ax.set_ylim(0, 1.1)
-    style_axes(ax, "Кількість воркерів p", "Ефективність E(p) = S(p) / p")
-    ax.legend(frameon=False, loc="lower left")
-    save(fig, "efficiency")
+    fig, axes = plt.subplots(1, 2, figsize=(7.6, 3.9), sharey=True)
+    titles = ["(а) %s: база — послідовний алгоритм на master" % symbol,
+              "(б) %s*: база — шифрування одним воркером" % symbol]
+    for ax, metric, title in zip(axes, (key, key_worker), titles):
+        if ideal == "linear":
+            ax.plot([1, p_max], [1, p_max], color=REFERENCE, linestyle="--", linewidth=1.5,
+                    label="Ідеальне")
+        else:
+            ax.axhline(1.0, color=REFERENCE, linestyle="--", linewidth=1.5, label="Ідеальна")
+        for i, (size, items) in enumerate(by_size(par)):
+            ax.plot([r["workers"] for r in items], [r[metric] for r in items],
+                    color=SERIES_COLORS[i], marker=MARKERS[i], markersize=6, linewidth=2,
+                    label="%g МіБ" % size)
+        ax.set_xticks(range(1, p_max + 1))
+        ax.set_xlim(0.8, p_max + 0.2)
+        ax.set_ylim(*ylim)
+        ax.set_title(title, fontsize=9, color=INK_SECONDARY)
+        style_axes(ax, "Кількість воркерів p", ylabel if ax is axes[0] else "")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, frameon=False, ncol=5, loc="lower center", fontsize=9)
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    os.makedirs(FIG_DIR, exist_ok=True)
+    for ext in ("pdf", "png"):
+        fig.savefig(os.path.join(FIG_DIR, "%s.%s" % (name, ext)), dpi=200)
+    plt.close(fig)
 
 
 def plot_breakdown(rows, size_mb):
@@ -184,7 +204,7 @@ def plot_breakdown(rows, size_mb):
     labels = [str(r["workers"]) for r in items]
     parts = [
         ("compute", "Шифрування (найповільніший воркер)", [r["compute_max_s"] for r in items]),
-        ("network", "Передача + серіалізація Pyro4", [r["transfer_s"] for r in items]),
+        ("network", "Передача, серіалізація Pyro4, base64 на воркерах", [r["transfer_s"] for r in items]),
         ("prepare", "Розбиття + base64 на master", [r["prepare_s"] for r in items]),
         ("merge", "Декодування + склеювання на master", [r["merge_s"] for r in items]),
     ]
@@ -196,8 +216,8 @@ def plot_breakdown(rows, size_mb):
         bottom = [b + v for b, v in zip(bottom, values)]
     t_seq = [r for r in rows if r["size_mb"] == size_mb and r["workers"] == 0][0]["total_s"]
     ax.axhline(t_seq, color=REFERENCE, linestyle="--", linewidth=1.5)
-    ax.text(len(items) - 0.6, t_seq, "послідовний алгоритм: %.3g с" % t_seq, color=INK_SECONDARY,
-            ha="right", va="bottom", fontsize=9)
+    ax.text(len(items) - 0.6, t_seq, "послідовний алгоритм на master: %.3g с" % t_seq,
+            color=INK_SECONDARY, ha="right", va="bottom", fontsize=9)
     style_axes(ax, "Кількість воркерів p", "Час, с")
     ax.legend(frameon=False, fontsize=8, ncol=2, loc="upper center", bbox_to_anchor=(0.5, -0.16))
     save(fig, "breakdown_%gmb" % size_mb)
@@ -216,17 +236,16 @@ def write_tables(rows):
             if i:
                 f.write("\\midrule\n")
             for r in items:
-                f.write("%g & %s & %s $\\pm$ %s & %s & %s & %s & %s \\\\\n" % (
+                f.write("%g & %s & %s $\\pm$ %s & %s & %s & %s & %s & %s & %s \\\\\n" % (
                     size, "посл." if r["workers"] == 0 else r["workers"],
                     fmt(r["total_s"]), fmt(r["total_std_s"]), fmt(r["compute_max_s"]),
-                    fmt(r["overhead_s"]), fmt(r["speedup"], 2),
-                    fmt(r["efficiency"], 2)))
+                    fmt(r["overhead_s"]), fmt(r["speedup"], 2), fmt(r["efficiency"], 2),
+                    fmt(r["speedup_worker_base"], 2), fmt(r["efficiency_worker_base"], 2)))
         f.write("\\bottomrule\n")
-    with open(os.path.join(TAB_DIR, "karp_flatt_table.tex"), "w") as f:
+    with open(os.path.join(TAB_DIR, "overhead_table.tex"), "w") as f:
         for size, items in by_size(rows):
-            cells = [fmt(r["karp_flatt"], 3) for r in items if r["workers"] >= 2]
             shares = ["%.0f\\%%" % (100 * r["overhead_share"]) for r in items if r["workers"] >= 1]
-            f.write("%g & %s & %s \\\\\n" % (size, " & ".join(cells), " & ".join(shares)))
+            f.write("%g & %s \\\\\n" % (size, " & ".join(shares)))
         f.write("\\bottomrule\n")
 
 
@@ -241,17 +260,19 @@ def main():
         writer.writerows(rows)
 
     plot_time(rows)
-    plot_speedup(rows)
-    plot_efficiency(rows)
+    plot_two_baselines(rows, "speedup", "speedup_worker_base", "S", "Прискорення",
+                       "linear", "speedup", (0, 4.3))
+    plot_two_baselines(rows, "efficiency", "efficiency_worker_base", "E", "Ефективність",
+                       "one", "efficiency", (0, 1.1))
     plot_breakdown(rows, max(r["size_mb"] for r in rows))
-    plot_breakdown(rows, min(r["size_mb"] for r in rows))
     write_tables(rows)
 
-    print("size_MB  p   T,s      S     E     overhead  Karp-Flatt")
+    print("size_MB  p   T,s      S     E      S*    E*    overhead")
     for r in rows:
-        print("%6g  %2d  %7.3f  %5.2f  %5s  %6.1f%%  %s" % (
-            r["size_mb"], r["workers"], r["total_s"], r["speedup"],
-            fmt(r["efficiency"], 2), 100 * r["overhead_share"], fmt(r["karp_flatt"], 3)))
+        print("%6g  %2d  %7.3f  %5.2f  %5s  %5s  %5s  %6.1f%%" % (
+            r["size_mb"], r["workers"], r["total_s"], r["speedup"], fmt(r["efficiency"], 2),
+            fmt(r["speedup_worker_base"], 2), fmt(r["efficiency_worker_base"], 2),
+            100 * r["overhead_share"]))
     print("Wrote %s, figures to %s, tables to %s" % (out, FIG_DIR, TAB_DIR))
 
 
