@@ -1,0 +1,40 @@
+# --- Secrets: never commit keys or credentials ---
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ed25519*
+.aws/
+credentials
+*.env
+.env*
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- Generated files ---
+build/
+data/
+results/smoke/
+results/smoke_*
+results/local.csv
+
+# --- LaTeX build artefacts ---
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.synctex.gz
+report/*.fls
+report/*.fdb_latexmk
+report/*.xdv
+report/_minted*
+
+# --- OS / editors ---
+.DS_Store
+.idea/
+.vscode/

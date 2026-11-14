@@ -1,0 +1,40 @@
+Workers registered on master: 4
+Running data/job_1mb.bin
+  job #2 submitted, waiting...
+  # job=1MB python=2.7.13 host=ip-172-31-39-128 workers_available=4
+  25 rows saved to results/raw_results.csv
+Running data/job_4mb.bin
+  job #3 submitted, waiting...
+  # job=4MB python=2.7.13 host=ip-172-31-39-128 workers_available=4
+  25 rows saved to results/raw_results.csv
+Running data/job_16mb.bin
+  job #4 submitted, waiting...
+  # job=16MB python=2.7.13 host=ip-172-31-39-128 workers_available=4
+  25 rows saved to results/raw_results.csv
+Running data/job_64mb.bin
+  job #5 submitted, waiting...
+  # job=64MB python=2.7.13 host=ip-172-31-39-128 workers_available=4
+  25 rows saved to results/raw_results.csv
+
+size_MB  workers  total_mean_s  overhead_mean_s  match
+    1.0        0         0.429            0.000      1
+    1.0        1         0.443            0.061      1
+    1.0        2         0.251            0.037      1
+    1.0        3         0.177            0.033      1
+    1.0        4         0.138            0.028      1
+    4.0        0         1.719            0.000      1
+    4.0        1         1.794            0.257      1
+    4.0        2         0.971            0.155      1
+    4.0        3         0.681            0.120      1
+    4.0        4         0.529            0.103      1
+   16.0        0         6.846            0.000      1
+   16.0        1         7.319            1.094      1
+   16.0        2         3.937            0.696      1
+   16.0        3         2.764            0.516      1
+   16.0        4         2.172            0.470      1
+   64.0        0        27.669            0.000      1
+   64.0        1        29.692            4.733      1
+   64.0        2        16.885            3.009      1
+   64.0        3        11.815            2.519      1
+   64.0        4         9.074            2.186      1
+Summary saved to results/summary.csv
